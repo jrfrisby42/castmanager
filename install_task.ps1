@@ -1,6 +1,7 @@
 # Registers the "Cast Manager" scheduled task: starts at system startup, runs whether or not a
-# user is logged on (S4U logon as the current user, so the per-user Python install and its
-# packages are found), and restarts every minute if it fails.
+# user is logged on, and restarts every minute if it fails. It runs as SYSTEM: an S4U task for an
+# Azure AD account (AzureAD\user) is accepted by Windows but never launches (seen 2026-10-15), and
+# SYSTEM can still run the per-user Python install found below.
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\install_task.ps1
 
 $ErrorActionPreference = "Stop"
@@ -24,10 +25,9 @@ if (-not $pythonw) {
 if (-not (Test-Path $pythonw)) { throw "pythonw.exe not found." }
 Write-Host "Using $pythonw"
 
-$user = "$env:USERDOMAIN\$env:USERNAME"
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$Main`"" -WorkingDirectory $AppDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
@@ -38,4 +38,4 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Pr
     -Settings $settings -Description "Keeps the office TVs casting their dashboards. Web page: http://127.0.0.1:8765" `
     -Force | Out-Null
 
-Write-Host "Registered task '$TaskName' for $user. Start it now with:  Start-ScheduledTask -TaskName '$TaskName'"
+Write-Host "Registered task '$TaskName' (runs as SYSTEM). Start it now with:  Start-ScheduledTask -TaskName '$TaskName'"
