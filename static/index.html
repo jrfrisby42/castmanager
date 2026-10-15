@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cast Manager</title>
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color: #1e293b; background: #f8fafc; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 14px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
+  th, td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; }
+  .url { color: #64748b; font-family: Consolas, monospace; font-size: 11px; }
+  button { font-size: 12px; margin: 1px; padding: 3px 8px; cursor: pointer; }
+  .st { font-weight: 600; }
+  .st-showing, .st-casting { color: #15803d; }
+  .st-offline, .st-error, .st-wrong { color: #b91c1c; }
+  .st-in, .st-paused, .st-idle { color: #b45309; }
+  .panel { background: #fff; border: 1px solid #e2e8f0; padding: 12px; margin-top: 14px; max-width: 640px; }
+  .panel label { display: block; margin: 6px 0 2px; font-size: 12px; color: #475569; }
+  .panel input[type=text] { width: 100%; box-sizing: border-box; padding: 4px; }
+  .hidden { display: none; }
+  #msg { margin: 8px 0; min-height: 18px; font-size: 13px; }
+  .err { color: #b91c1c; }
+</style>
+</head>
+<body>
+<h1>Cast Manager</h1>
+<div class="sub" id="sub">Loading...</div>
+<div>
+  <button onclick="openForm(null)">Add TV</button>
+  <button onclick="discover()">Discover</button>
+</div>
+<div id="msg"></div>
+<table>
+  <thead><tr><th>Name</th><th>IP</th><th>Status</th><th>Now showing</th><th>Last check</th>
+    <th>Last re-cast</th><th>Re-casts today</th><th>Actions</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<div class="panel hidden" id="form">
+  <b id="form-title">Add TV</b>
+  <label>IP address</label>
+  <input type="text" id="f-ip"> <button onclick="lookup()">Look up</button>
+  <label>Name</label><input type="text" id="f-name">
+  <label>UUID</label><input type="text" id="f-uuid">
+  <label>URL <span id="f-url-note"></span></label><input type="text" id="f-url" autocomplete="off">
+  <label><input type="checkbox" id="f-clear"> Clear the stored url</label>
+  <label><input type="checkbox" id="f-enabled" checked> Enabled</label>
+  <div style="margin-top:8px">
+    <button onclick="saveForm()">Save</button> <button onclick="closeForm()">Cancel</button>
+    <button id="f-delete" onclick="deleteTv()">Delete TV</button>
+  </div>
+</div>
+
+<div class="panel hidden" id="disc"><b>Discovered by mDNS</b><div id="disc-list"></div></div>
+
+<script>
+let tvs = [], editing = null;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function when(t) { return t ? new Date(t * 1000).toLocaleTimeString() : '-'; }
+function say(text, isErr) { const m = document.getElementById('msg'); m.textContent = text || ''; m.className = isErr ? 'err' : ''; }
+
+async function call(method, path, body) {
+  const opts = { method, headers: { 'X-Requested-With': 'castmanager' } };
+  if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+  return data;
+}
+
+async function refresh() {
+  try {
+    const d = await call('GET', '/api/tvs');
+    tvs = d.tvs;
+    document.getElementById('sub').textContent =
+      `takeover: ${d.takeover} | check every ${d.check_interval_s}s | refreshed ${new Date().toLocaleTimeString()}`;
+    document.getElementById('rows').innerHTML = tvs.map(t => `
+      <tr>
+        <td>${esc(t.name)}${t.enabled ? '' : ' (disabled)'}<div class="url">${esc(t.url_masked || 'no url')}</div></td>
+        <td>${esc(t.ip)}</td>
+        <td class="st st-${esc(t.status.split(' ')[0])}">${esc(t.status)}</td>
+        <td>${esc(t.now_showing || '-')}</td>
+        <td>${when(t.last_check)}</td>
+        <td>${when(t.last_recast)}</td>
+        <td>${t.recasts_today}</td>
+        <td>
+          <button onclick="act('${t.id}','cast')">Cast now</button>
+          <button onclick="act('${t.id}','stop')">Stop</button>
+          <button onclick="act('${t.id}','${t.paused ? 'resume' : 'pause'}')">${t.paused ? 'Resume' : 'Pause'}</button>
+          <button onclick="openForm('${t.id}')">Edit</button>
+        </td>
+      </tr>`).join('');
+  } catch (e) { say('Could not load: ' + e.message, true); }
+}
+
+async function act(id, what) {
+  try { const r = await call('POST', `/api/tvs/${id}/${what}`); say(r.message); }
+  catch (e) { say(what + ' failed: ' + e.message, true); }
+  refresh();
+}
+
+function openForm(id) {
+  editing = id;
+  const t = tvs.find(x => x.id === id) || { name: '', ip: '', uuid: '', enabled: true };
+  document.getElementById('form-title').textContent = id ? 'Edit ' + t.name : 'Add TV';
+  document.getElementById('f-ip').value = t.ip;
+  document.getElementById('f-name').value = t.name;
+  document.getElementById('f-uuid').value = t.uuid;
+  // The stored url is never sent to the page; leave the box blank to keep it.
+  document.getElementById('f-url').value = '';
+  document.getElementById('f-url-note').textContent = id && t.has_url ? `(current: ${t.url_masked}; leave blank to keep)` : '';
+  document.getElementById('f-clear').checked = false;
+  document.getElementById('f-enabled').checked = !!t.enabled;
+  document.getElementById('f-delete').classList.toggle('hidden', !id);
+  document.getElementById('form').classList.remove('hidden');
+}
+function closeForm() { document.getElementById('form').classList.add('hidden'); editing = null; }
+
+async function saveForm() {
+  const body = {
+    name: document.getElementById('f-name').value.trim(),
+    ip: document.getElementById('f-ip').value.trim(),
+    uuid: document.getElementById('f-uuid').value.trim(),
+    url: document.getElementById('f-url').value.trim(),
+    enabled: document.getElementById('f-enabled').checked,
+  };
+  try {
+    if (editing) { body.clear_url = document.getElementById('f-clear').checked; await call('PUT', '/api/tvs/' + editing, body); }
+    else await call('POST', '/api/tvs', body);
+    say('Saved.'); closeForm();
+  } catch (e) { say('Save failed: ' + e.message, true); }
+  refresh();
+}
+
+async function deleteTv() {
+  if (!editing || !confirm('Delete this TV from the config?')) return;
+  try { await call('DELETE', '/api/tvs/' + editing); say('Deleted.'); closeForm(); }
+  catch (e) { say('Delete failed: ' + e.message, true); }
+  refresh();
+}
+
+async function lookup() {
+  const ip = document.getElementById('f-ip').value.trim();
+  say('Looking up ' + ip + '...');
+  try {
+    const d = await call('POST', '/api/lookup', { ip });
+    if (!document.getElementById('f-name').value) document.getElementById('f-name').value = d.name;
+    document.getElementById('f-uuid').value = d.uuid;
+    say('Found ' + d.name);
+  } catch (e) { say(e.message, true); }
+}
+
+async function discover() {
+  say('Discovering (about 5 seconds)...');
+  try {
+    const d = await call('GET', '/api/discover');
+    document.getElementById('disc-list').innerHTML = d.devices.length ? d.devices.map(x =>
+      `<div>${esc(x.name)} - ${esc(x.ip)} - ${esc(x.model)} - <span class="url">${esc(x.uuid)}</span></div>`).join('')
+      : 'Nothing found.';
+    document.getElementById('disc').classList.remove('hidden');
+    say('');
+  } catch (e) { say(e.message, true); }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

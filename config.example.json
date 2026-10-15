@@ -1,0 +1,11 @@
+{
+  "port": 8765,
+  "check_interval_s": 45,
+  "takeover": "idle_only",
+  "tvs": [
+    {"name": "Finance TV", "ip": "10.0.201.69", "uuid": "70b93c76-712c-365f-3976-66b7a97e9231", "url": "", "enabled": true},
+    {"name": "Camron's TV", "ip": "10.0.201.17", "uuid": "12d6fbe0-5b04-62d5-2158-542204f44f3f", "url": "", "enabled": true},
+    {"name": "amber/tarah", "ip": "10.0.201.70", "uuid": "c07edcf6-8225-2d21-fd86-a8fdec83e048", "url": "", "enabled": true},
+    {"name": "Porter's TV", "ip": "10.0.201.109", "uuid": "", "url": "", "enabled": false}
+  ]
+}

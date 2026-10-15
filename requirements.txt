@@ -1,0 +1,6 @@
+pychromecast>=14
+fastapi>=0.110
+uvicorn>=0.29
+# tests only
+pytest>=8
+httpx>=0.27

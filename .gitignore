@@ -1,0 +1,6 @@
+# display links are secrets
+config.json
+config.json.tmp
+logs/
+__pycache__/
+.pytest_cache/
