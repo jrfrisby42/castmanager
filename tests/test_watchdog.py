@@ -208,3 +208,48 @@ def test_stop_quits_and_pauses(make):
     wd._states["tv-1"].paused = False   # resume without the background thread
     wd.check_once()
     assert len(backend.casts()) == 1
+
+
+# ---------------------------------------------------------------- stop the running app before casting
+
+def _ops(backend, ip="10.0.201.1"):
+    return [op for op, i, _ in backend.calls if i == ip and op in ("quit", "cast")]
+
+
+def test_url_change_on_dashcast_tv_quits_then_casts(make):
+    # DashCast force mode leaves no receiver behind, so a new url only takes after a fresh launch.
+    store, backend, wd, clock = make([tv(1)])
+    backend.devices["10.0.201.1"].app_id = DASHCAST_APP_ID
+    wd.check_once()                                        # startup cast onto a DashCast TV
+    assert _ops(backend) == ["quit", "cast"]
+    store.update_tv("tv-1", {"url": URL + "x"})
+    clock.advance(10)
+    wd.check_once()
+    assert _ops(backend) == ["quit", "cast", "quit", "cast"]
+    assert backend.casts()[-1] == ("cast", "10.0.201.1", URL + "x")
+
+
+def test_idle_tv_casts_without_quit(make):
+    store, backend, wd, clock = make([tv(1)])
+    wd.check_once()
+    assert _ops(backend) == ["cast"]
+
+
+def test_takeover_always_quits_other_app_first(make):
+    store, backend, wd, clock = make([tv(1)], takeover="always")
+    dev = backend.devices["10.0.201.1"]
+    dev.app_id, dev.display_name = "233637DE", "YouTube"
+    wd.check_once()
+    assert _ops(backend) == ["quit", "cast"]
+
+
+def test_app_that_will_not_stop_still_gets_cast_after_settle(make):
+    store, backend, wd, clock = make([tv(1)])
+    dev = backend.devices["10.0.201.1"]
+    dev.app_id = DASHCAST_APP_ID
+    slept = []
+    wd.sleep = slept.append
+    backend.quit = lambda handle: backend.calls.append(("quit", handle.ip, None))  # app ignores quit
+    wd.check_once()
+    assert _ops(backend) == ["quit", "cast"]
+    assert sum(slept) == 8                                 # waited QUIT_SETTLE_S, never really slept

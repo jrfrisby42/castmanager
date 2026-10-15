@@ -12,6 +12,7 @@ log = logging.getLogger("castmanager")
 RECAST_MIN_INTERVAL_S = 120   # at most one re-cast per TV every 2 minutes
 BACKOFF_START_S = 45          # offline reconnect backoff: 45 s doubling ...
 BACKOFF_MAX_S = 300           # ... to a 5 minute cap
+QUIT_SETTLE_S = 8             # how long to wait for a TV to go idle after stopping its app
 
 
 def classify(app_id, display_name):
@@ -70,10 +71,11 @@ class TVState:
 
 
 class Watchdog:
-    def __init__(self, store, backend, clock=time.time):
+    def __init__(self, store, backend, clock=time.time, sleep=time.sleep):
         self.store = store
         self.backend = backend
         self.clock = clock
+        self.sleep = sleep
         self._states = {}
         self._locks = {}
         self._meta = threading.Lock()
@@ -154,6 +156,7 @@ class Watchdog:
         if refusal:
             log.warning("%s: refused to cast (%s): %s", tv["name"], reason, refusal)
             return False, refusal
+        self._stop_running_app(tv, handle)
         self.backend.cast(handle, tv["url"])
         day = time.strftime("%Y-%m-%d", time.localtime(now))
         if st.recast_day != day:
@@ -163,6 +166,24 @@ class Watchdog:
         log.info("%s (%s): cast %s, reason: %s", tv["name"], tv["ip"], mask_url(tv["url"]), reason)
         self._set_status(tv, st, "casting")
         return True, "cast sent"
+
+    def _stop_running_app(self, tv, handle):
+        """Quit whatever app the TV is running before casting. DashCast force mode replaces its
+        own receiver with the page it loads, so a TV already showing a page reports DashCast but
+        has nothing left to accept a new url; only a fresh launch takes it (bug seen 2026-10-15)."""
+        dev = self.backend.status(handle)
+        if classify(dev.app_id, dev.display_name) == "idle":
+            return
+        log.info("%s: stopping %s before casting", tv["name"], dev.display_name or dev.app_id)
+        self.backend.quit(handle)
+        waited = 0.0
+        while waited < QUIT_SETTLE_S:
+            dev = self.backend.status(handle)
+            if classify(dev.app_id, dev.display_name) == "idle":
+                return
+            self.sleep(0.5)
+            waited += 0.5
+        log.warning("%s: still running %s after stopping it; casting anyway", tv["name"], dev.display_name or dev.app_id)
 
     # ------------------------------------------------------------ the check
 
