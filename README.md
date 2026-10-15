@@ -58,8 +58,10 @@ Start-ScheduledTask -TaskName "Cast Manager"                    # start it now
 powershell -ExecutionPolicy Bypass -File .\uninstall_task.ps1   # remove it
 ```
 
-The task runs `pythonw main.py` at system startup as the current user (S4U, so no password is
-stored and no one needs to be logged on) and restarts every minute on failure.
+The task runs `pythonw main.py` at system startup as SYSTEM (no one needs to be logged on and no
+password is stored) and restarts every minute on failure. It is not run as the current user because
+an S4U task for an Azure AD account is accepted but never launches. Check it with
+`Get-ScheduledTask -TaskName 'Cast Manager'` and the page at http://127.0.0.1:8765.
 
 ## Tests
 
