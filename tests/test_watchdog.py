@@ -385,3 +385,17 @@ def test_change_event_triggers_an_immediate_check(make):
     wd._states["tv-1"].handle.on_change()             # what the cast library calls
     assert done.wait(5)
     assert len(backend.casts()) == 1
+
+
+def test_idle_blip_while_launching_stays_casting(make):
+    store, backend, wd, clock = make([tv(1)])
+    wd.check_once()                                   # startup cast -> casting
+    dev = backend.devices["10.0.201.1"]
+    dev.app_id, dev.display_name = None, "Backdrop"   # launch gap: no app for a moment
+    clock.advance(1)
+    wd.check_once()
+    assert wd.snapshot()[0]["status"] == "casting"
+    assert len(backend.casts()) == 1
+    clock.advance(25)                                 # still idle well after the cast: real idle
+    wd.check_once()
+    assert wd.snapshot()[0]["status"] == "idle"

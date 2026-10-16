@@ -20,6 +20,7 @@ BACKOFF_SLOW_START_S = 30
 BACKOFF_MAX_S = 120
 QUIT_SETTLE_S = 8             # how long to wait for a TV to go idle after stopping its app
 POKE_SETTLE_S = 1.0           # coalesce a burst of device change events into one check
+CAST_GRACE_S = 20             # after a cast, a TV briefly reporting idle is still launching
 EVENTS_KEPT = 200
 
 
@@ -292,6 +293,9 @@ class Watchdog:
             if refusal == "no url":
                 self._set_status(tv, st, "no url")
                 return
+            if (kind == "idle" and st.status == "casting" and st.last_recast is not None
+                    and now - st.last_recast < CAST_GRACE_S):
+                return  # the TV passes through "no app" while DashCast launches; still casting
             if kind == "showing":
                 self._set_status(tv, st, "showing")
             elif kind == "idle":
