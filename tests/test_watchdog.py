@@ -253,3 +253,63 @@ def test_app_that_will_not_stop_still_gets_cast_after_settle(make):
     wd.check_once()
     assert _ops(backend) == ["quit", "cast"]
     assert sum(slept) == 8                                 # waited QUIT_SETTLE_S, never really slept
+
+
+# ---------------------------------------------------------------- scheduled refresh
+
+def _showing(backend, ip="10.0.201.1"):
+    dev = backend.devices[ip]
+    dev.app_id, dev.display_name = DASHCAST_APP_ID, "DashCast"
+
+
+def test_showing_tv_is_recast_after_refresh_interval(make):
+    store, backend, wd, clock = make([tv(1)])
+    wd.check_once()                      # startup cast at t0
+    _showing(backend)
+    clock.advance(3 * 3600 - 60)
+    backend.calls.clear()
+    wd.check_once()
+    assert backend.casts() == []         # not yet
+    clock.advance(60)
+    wd.check_once()
+    assert len(backend.casts()) == 1
+    assert ("quit",) in [c[:1] for c in backend.calls]   # relaunch, not a reload of the old app
+    _showing(backend)
+    clock.advance(45)
+    backend.calls.clear()
+    wd.check_once()
+    assert backend.casts() == []         # the clock restarted at the refresh
+
+
+def test_refresh_interval_zero_turns_it_off(make):
+    store, backend, wd, clock = make([tv(1)])
+    store._cfg["refresh_interval_s"] = 0
+    wd.check_once()
+    _showing(backend)
+    clock.advance(24 * 3600)
+    backend.calls.clear()
+    wd.check_once()
+    assert backend.casts() == []
+
+
+def test_refresh_skips_paused_and_other_apps(make):
+    store, backend, wd, clock = make([tv(1), tv(2)])
+    wd.check_once()
+    _showing(backend, "10.0.201.1")
+    dev2 = backend.devices["10.0.201.2"]
+    dev2.app_id, dev2.display_name = "233637DE", "YouTube"
+    wd.set_paused("tv-1", True)
+    clock.advance(4 * 3600)
+    backend.calls.clear()
+    wd.check_once()
+    assert backend.casts() == []
+
+
+def test_refresh_interval_has_a_floor(tmp_path):
+    import json
+    from config import ConfigStore
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"refresh_interval_s": 30, "tvs": []}))
+    assert ConfigStore(str(p)).get()["refresh_interval_s"] == 600
+    p.write_text(json.dumps({"tvs": []}))
+    assert ConfigStore(str(p)).get()["refresh_interval_s"] == 10800

@@ -11,7 +11,7 @@ import secrets
 import threading
 from urllib.parse import urlsplit
 
-DEFAULTS = {"port": 8765, "check_interval_s": 45, "takeover": "idle_only", "tvs": []}
+DEFAULTS = {"port": 8765, "check_interval_s": 45, "refresh_interval_s": 10800, "takeover": "idle_only", "tvs": []}
 TAKEOVER_MODES = ("idle_only", "always")
 
 # A run of 16+ URL-safe characters looks like a token (display links use 43).
@@ -85,6 +85,9 @@ class ConfigStore:
             raise ValueError(f"takeover must be one of {TAKEOVER_MODES}")
         cfg["port"] = int(cfg["port"])
         cfg["check_interval_s"] = max(5, int(cfg["check_interval_s"]))
+        # 0 turns the scheduled refresh off; anything else is at least 10 minutes.
+        refresh = int(cfg["refresh_interval_s"] or 0)
+        cfg["refresh_interval_s"] = max(600, refresh) if refresh > 0 else 0
         tvs, changed = [], False
         for tv in cfg.get("tvs") or []:
             clean = validate_tv(tv)

@@ -228,6 +228,14 @@ class Watchdog:
                 self._set_status(tv, st, f"in use by {dev.display_name or dev.app_id}")
 
             want = wants_recast(kind, takeover)
+            refresh_s = self.store.get()["refresh_interval_s"]
+            if kind == "showing" and st.last_recast is None:
+                st.last_recast = now  # already showing when we started: count the refresh from now
+            if (not st.pending and kind == "showing" and refresh_s
+                    and now - st.last_recast >= refresh_s):
+                # A long-running Chromecast page can stop repainting while its timers keep
+                # running (slides stuck, seen 2026-10-16); a fresh receiver launch clears it.
+                st.pending = f"scheduled refresh (every {refresh_s // 60} min)"
             if st.pending and (want or kind == "showing"):
                 ok, _ = self._safe_cast(tv, st, handle, dev, st.pending, now)
                 if ok:
