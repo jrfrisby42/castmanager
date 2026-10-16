@@ -1,4 +1,5 @@
 """Watchdog: keeps each enabled TV showing its configured url (spec B2 and B3)."""
+import collections
 import logging
 import threading
 import time
@@ -9,10 +10,22 @@ from config import mask_url
 
 log = logging.getLogger("castmanager")
 
-RECAST_MIN_INTERVAL_S = 120   # at most one re-cast per TV every 2 minutes
-BACKOFF_START_S = 45          # offline reconnect backoff: 45 s doubling ...
-BACKOFF_MAX_S = 300           # ... to a 5 minute cap
+RECAST_MIN_INTERVAL_S = 60    # at most one re-cast per TV every minute
+# Offline reconnects: most drops are a Wi-Fi blip or a reboot of a minute or two, so retry every
+# FAST_RETRY_S for the first FAST_RETRY_WINDOW_S, then back off from BACKOFF_SLOW_START_S,
+# doubling to BACKOFF_MAX_S.
+FAST_RETRY_S = 15
+FAST_RETRY_WINDOW_S = 120
+BACKOFF_SLOW_START_S = 30
+BACKOFF_MAX_S = 120
 QUIT_SETTLE_S = 8             # how long to wait for a TV to go idle after stopping its app
+POKE_SETTLE_S = 1.0           # coalesce a burst of device change events into one check
+EVENTS_KEPT = 200
+
+
+def _fmt_s(seconds):
+    seconds = int(seconds or 0)
+    return f"{seconds // 60}m {seconds % 60}s" if seconds >= 60 else f"{seconds}s"
 
 
 def classify(app_id, display_name):
@@ -68,6 +81,13 @@ class TVState:
     next_attempt: float = 0
     pending: str | None = "startup"   # reason for a cast owed (startup or url change)
     seen: tuple | None = None          # (ip, uuid, url) last applied
+    offline_since: float | None = None # first failed reconnect of the current outage
+    down_since: float | None = None    # when the TV stopped showing its page (unplanned)
+    drops_today: int = 0
+    drop_day: str = ""
+    last_drop: float | None = None
+    last_down_s: float | None = None   # length of the last outage, once it recovered
+    poke_pending: bool = False
 
 
 class Watchdog:
@@ -79,6 +99,7 @@ class Watchdog:
         self._states = {}
         self._locks = {}
         self._meta = threading.Lock()
+        self.events = collections.deque(maxlen=EVENTS_KEPT)   # newest last
 
     # ------------------------------------------------------------ helpers
 
@@ -90,10 +111,61 @@ class Watchdog:
         with self._meta:
             return self._states.setdefault(tv_id, TVState())
 
+    def _event(self, tv, text):
+        self.events.append({"t": self.clock(), "tv_id": tv["id"], "name": tv["name"], "event": text})
+
     def _set_status(self, tv, st, status):
-        if st.status != status:
-            log.info("%s (%s): status %s -> %s", tv["name"], tv["ip"], st.status, status)
-            st.status = status
+        if st.status == status:
+            return
+        log.info("%s (%s): status %s -> %s", tv["name"], tv["ip"], st.status, status)
+        old, st.status = st.status, status
+        now = self.clock()
+        # A drop is the TV leaving its page on its own: going offline, back to the idle screen,
+        # or another app. Our own re-casts (showing -> casting), pausing and disabling are not.
+        unplanned = status in ("offline", "idle", "error") or status.startswith("in use")
+        if old == "showing" and unplanned and st.down_since is None:
+            day = time.strftime("%Y-%m-%d", time.localtime(now))
+            if st.drop_day != day:
+                st.drop_day, st.drops_today = day, 0
+            st.drops_today += 1
+            st.down_since = st.last_drop = now
+            self._event(tv, f"dropped ({status})")
+            log.warning("%s (%s): dropped (%s)", tv["name"], tv["ip"], status)
+        elif status == "showing" and st.down_since is not None:
+            st.last_down_s = now - st.down_since
+            st.down_since = None
+            self._event(tv, f"back after {_fmt_s(st.last_down_s)}")
+            log.info("%s (%s): back after %s", tv["name"], tv["ip"], _fmt_s(st.last_down_s))
+        elif status in ("paused", "disabled") and st.down_since is not None:
+            st.down_since = None   # a manual stop ends the outage tracking
+
+    def _retry_later(self, st, now):
+        """Schedule the next reconnect of an offline TV (fast at first, then backing off)."""
+        if st.offline_since is None:
+            st.offline_since = now
+        if now - st.offline_since < FAST_RETRY_WINDOW_S:
+            st.backoff_s = FAST_RETRY_S
+        else:
+            st.backoff_s = min(max(st.backoff_s * 2, BACKOFF_SLOW_START_S), BACKOFF_MAX_S)
+        st.next_attempt = now + st.backoff_s
+
+    def _poke(self, tv_id):
+        """Device change event (connection or app): check that TV now instead of waiting for the
+        next pass. Runs on a library thread, so hand off to a short-lived thread."""
+        st = self._state(tv_id)
+        with self._meta:
+            if st.poke_pending:
+                return
+            st.poke_pending = True
+
+        def go():
+            self.sleep(POKE_SETTLE_S)
+            st.poke_pending = False
+            try:
+                self.check_tv(tv_id)
+            except Exception:
+                log.exception("event check failed for %s", tv_id)
+        threading.Thread(target=go, daemon=True).start()
 
     def _disconnect(self, st):
         if st.handle is not None:
@@ -121,14 +193,15 @@ class Watchdog:
             self._set_status(tv, st, "offline")
             return None
         try:
-            st.handle = self.backend.connect(tv["ip"], tv["uuid"])
+            tv_id = tv["id"]
+            st.handle = self.backend.connect(tv["ip"], tv["uuid"], on_change=lambda: self._poke(tv_id))
         except Exception as e:
-            st.backoff_s = BACKOFF_START_S if not st.backoff_s else min(st.backoff_s * 2, BACKOFF_MAX_S)
-            st.next_attempt = now + st.backoff_s
+            self._retry_later(st, now)
             log.warning("%s (%s): connect failed: %s; retry in %ds", tv["name"], tv["ip"], e, st.backoff_s)
             self._set_status(tv, st, "offline")
             return None
         st.backoff_s = st.next_attempt = 0
+        st.offline_since = None
         log.info("%s (%s): connected", tv["name"], tv["ip"])
         return st.handle
 
@@ -145,8 +218,7 @@ class Watchdog:
                 log.warning("%s (%s): connection lost: %s", tv["name"], tv["ip"], e)
                 self._disconnect(st)
                 if attempt == 2:
-                    st.backoff_s = BACKOFF_START_S if not st.backoff_s else min(st.backoff_s * 2, BACKOFF_MAX_S)
-                    st.next_attempt = now + st.backoff_s
+                    self._retry_later(st, now)
                     self._set_status(tv, st, "offline")
         return None, None
 
@@ -242,7 +314,7 @@ class Watchdog:
                     st.pending = None
             elif want:
                 if st.last_recast is not None and now - st.last_recast < RECAST_MIN_INTERVAL_S:
-                    log.info("%s: %s but re-cast held (2 minute limit)", tv["name"], kind)
+                    log.info("%s: %s but re-cast held (%ds limit)", tv["name"], kind, RECAST_MIN_INTERVAL_S)
                 else:
                     reason = "TV was idle" if kind == "idle" else f"takeover=always, TV showed {st.now_showing}"
                     self._safe_cast(tv, st, handle, dev, reason, now)
@@ -262,11 +334,22 @@ class Watchdog:
             for gone in set(self._states) - live:
                 self._disconnect(self._states.pop(gone))
 
+    def _next_wait(self):
+        """Seconds until the next pass: the check interval, or sooner when an offline TV is due
+        for its next reconnect attempt."""
+        wait = float(self.store.get()["check_interval_s"])
+        now = self.clock()
+        with self._meta:
+            due = [st.next_attempt for st in self._states.values() if st.handle is None and st.next_attempt]
+        if due:
+            wait = min(wait, max(1.0, min(due) - now))
+        return wait
+
     def run(self, stop_event):
         log.info("watchdog started")
         while not stop_event.is_set():
             self.check_once()
-            stop_event.wait(self.store.get()["check_interval_s"])
+            stop_event.wait(self._next_wait())
         for st in list(self._states.values()):
             self._disconnect(st)
         log.info("watchdog stopped")
@@ -347,5 +430,10 @@ class Watchdog:
                 "now_showing": st.now_showing, "last_check": st.last_check,
                 "last_recast": st.last_recast,
                 "recasts_today": st.recasts_today if st.recast_day == today else 0,
+                "drops_today": st.drops_today if st.drop_day == today else 0,
+                "last_drop": st.last_drop, "last_down_s": st.last_down_s, "down_since": st.down_since,
             })
         return rows
+
+    def recent_events(self, limit=100):
+        return list(reversed(list(self.events)))[:limit]

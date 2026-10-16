@@ -42,19 +42,33 @@ def test_b3_offline_backoff(make, takeover):
     store, backend, wd, clock = make([tv(1)], takeover=takeover)
     backend.devices["10.0.201.1"].reachable = False
     attempts = []
-    for _ in range(40):
+    for _ in range(200):
         before = connect_times(backend)
         wd.check_once()
         if connect_times(backend) > before:
             attempts.append(clock.t)
         assert wd.snapshot()[0]["status"] == "offline"
-        clock.advance(45)
+        clock.advance(5)                 # the run loop wakes up when a retry is due
     gaps = [b - a for a, b in zip(attempts, attempts[1:])]
-    # 45 s doubling, then capped at 300 s (seen as 315 s because checks run on a 45 s tick)
-    assert gaps[:3] == [45, 90, 180]
-    assert set(gaps[3:]) == {315}
-    assert wd._states["tv-1"].backoff_s == 300
+    # Every 15 s for the first 2 minutes, then 30 s doubling to a 2 minute cap.
+    assert gaps[:8] == [15] * 8
+    assert gaps[8:11] == [30, 60, 120]
+    assert set(gaps[11:]) == {120}
+    assert wd._states["tv-1"].backoff_s == 120
     assert not backend.casts()
+
+
+def test_next_wait_wakes_for_a_due_retry(make):
+    store, backend, wd, clock = make([tv(1)])
+    backend.devices["10.0.201.1"].reachable = False
+    wd.check_once()                      # first failed connect: retry due in 15 s
+    assert wd._next_wait() == 15
+    clock.advance(10)
+    assert wd._next_wait() == 5
+    backend.devices["10.0.201.1"].reachable = True
+    clock.advance(5)
+    wd.check_once()
+    assert wd._next_wait() == store.get()["check_interval_s"]
 
 
 @pytest.mark.parametrize("takeover", ["idle_only", "always"])
@@ -134,10 +148,10 @@ def test_two_idle_detections_60s_apart_one_recast(make, takeover):
     dev.app_id, dev.display_name = None, "Backdrop"
     wd.check_once()                                   # idle -> re-cast
     dev.app_id, dev.display_name = None, "Backdrop"   # TV fell back to idle again
-    clock.advance(60)
-    wd.check_once()                                   # idle again 60 s later -> held
+    clock.advance(30)
+    wd.check_once()                                   # idle again 30 s later -> held
     assert len(backend.casts()) == 1
-    clock.advance(61)                                 # 121 s after the first re-cast
+    clock.advance(31)                                 # 61 s after the first re-cast
     wd.check_once()
     assert len(backend.casts()) == 2
 
@@ -313,3 +327,61 @@ def test_refresh_interval_has_a_floor(tmp_path):
     assert ConfigStore(str(p)).get()["refresh_interval_s"] == 600
     p.write_text(json.dumps({"tvs": []}))
     assert ConfigStore(str(p)).get()["refresh_interval_s"] == 10800
+
+
+# ---------------------------------------------------------------- drops and instant checks
+
+def test_drop_and_recovery_are_counted(make):
+    store, backend, wd, clock = make([tv(1)])
+    wd.check_once()
+    _showing(backend)
+    clock.advance(60)
+    wd.check_once()
+    assert wd.snapshot()[0]["status"] == "showing"
+    backend.devices["10.0.201.1"].reachable = False
+    wd._states["tv-1"].handle.alive = False          # connection dropped
+    clock.advance(20)
+    wd.check_once()
+    row = wd.snapshot()[0]
+    assert row["status"] == "offline" and row["drops_today"] == 1 and row["down_since"] == clock.t
+    backend.devices["10.0.201.1"].reachable = True
+    backend.devices["10.0.201.1"].app_id, backend.devices["10.0.201.1"].display_name = None, "Backdrop"
+    clock.advance(15)
+    wd.check_once()                                   # reconnect, idle -> re-cast
+    _showing(backend)
+    clock.advance(20)
+    wd.check_once()
+    row = wd.snapshot()[0]
+    assert row["status"] == "showing" and row["down_since"] is None and row["last_down_s"] == 35
+    events = [e["event"] for e in wd.recent_events()]
+    assert events[0] == "back after 35s" and events[1] == "dropped (offline)"
+
+
+def test_own_recast_and_pause_are_not_drops(make):
+    store, backend, wd, clock = make([tv(1)])
+    wd.check_once()
+    _showing(backend)
+    clock.advance(60)
+    wd.check_once()
+    wd.cast_now("tv-1")                               # showing -> casting
+    wd.set_paused("tv-1", True)                       # -> paused
+    assert wd.snapshot()[0]["drops_today"] == 0
+
+
+def test_change_event_triggers_an_immediate_check(make):
+    import threading
+    store, backend, wd, clock = make([tv(1)])
+    wd.sleep = lambda s: None
+    wd.check_once()
+    _showing(backend)
+    clock.advance(120)
+    wd.check_once()
+    backend.calls.clear()
+    dev = backend.devices["10.0.201.1"]
+    dev.app_id, dev.display_name = None, "Backdrop"   # TV fell back to idle
+    done = threading.Event()
+    real = wd.check_tv
+    wd.check_tv = lambda tv_id: (real(tv_id), done.set())
+    wd._states["tv-1"].handle.on_change()             # what the cast library calls
+    assert done.wait(5)
+    assert len(backend.casts()) == 1

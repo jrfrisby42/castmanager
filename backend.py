@@ -19,7 +19,9 @@ class CastBackend:
     """Interface. connect() returns an opaque handle used by the other calls.
     Any method may raise; the watchdog treats failures as a lost connection."""
 
-    def connect(self, ip, uuid):
+    def connect(self, ip, uuid, on_change=None):
+        """on_change (optional) is called, from a library thread, whenever the device's
+        connection or running app changes, so the watchdog can react at once."""
         raise NotImplementedError
 
     def status(self, handle):
@@ -51,6 +53,21 @@ class _Conn:
     dashcast: object = None
 
 
+def _change_listener(on_change):
+    """One object that satisfies both pychromecast listener interfaces and calls on_change."""
+    from pychromecast.controllers.receiver import CastStatusListener
+    from pychromecast.socket_client import ConnectionStatusListener
+
+    class _Listener(CastStatusListener, ConnectionStatusListener):
+        def new_cast_status(self, status):
+            on_change()
+
+        def new_connection_status(self, status):
+            on_change()
+
+    return _Listener()
+
+
 class PyChromecastBackend(CastBackend):
     def __init__(self, timeout=10.0):
         self.timeout = timeout
@@ -60,7 +77,7 @@ class PyChromecastBackend(CastBackend):
         casts, browser = pychromecast.get_chromecasts(known_hosts=[ip], timeout=self.timeout)
         return [c for c in casts if str(c.cast_info.host) == ip], browser
 
-    def connect(self, ip, uuid):
+    def connect(self, ip, uuid, on_change=None):
         import pychromecast
         at_ip, browser = self._at_ip(ip)
         try:
@@ -78,6 +95,10 @@ class PyChromecastBackend(CastBackend):
             except Exception:
                 pass
             raise ConnectionError(f"timed out connecting to {ip}")
+        if on_change is not None:
+            listener = _change_listener(on_change)
+            chosen.socket_client.register_connection_listener(listener)
+            chosen.socket_client.receiver_controller.register_status_listener(listener)
         return _Conn(cast=chosen)
 
     def status(self, handle):
@@ -140,6 +161,7 @@ class FakeDevice:
 class _FakeHandle:
     ip: str
     alive: bool = True
+    on_change: object = None
 
 
 @dataclass
@@ -165,11 +187,11 @@ class FakeBackend(CastBackend):
             raise ConnectionError(f"fake: {ip} unreachable")
         return dev
 
-    def connect(self, ip, uuid):
+    def connect(self, ip, uuid, on_change=None):
         with self._lock:
             self.calls.append(("connect", ip, None))
         self._dev(ip)
-        return _FakeHandle(ip)
+        return _FakeHandle(ip, on_change=on_change)
 
     def status(self, handle):
         if not handle.alive:

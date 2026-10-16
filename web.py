@@ -64,6 +64,10 @@ def create_app(store, watchdog, backend):
         return {"takeover": cfg["takeover"], "check_interval_s": cfg["check_interval_s"],
                 "tvs": watchdog.snapshot()}
 
+    @app.get("/api/events")
+    def events():
+        return {"events": watchdog.recent_events()}
+
     @app.post("/api/tvs")
     def add_tv(body: TVIn):
         try:

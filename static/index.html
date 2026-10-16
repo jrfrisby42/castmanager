@@ -35,9 +35,12 @@
 <div id="msg"></div>
 <table>
   <thead><tr><th>Name</th><th>IP</th><th>Status</th><th>Now showing</th><th>Last check</th>
-    <th>Last re-cast</th><th>Re-casts today</th><th>Actions</th></tr></thead>
+    <th>Last re-cast</th><th>Re-casts today</th><th>Drops today</th><th>Last drop</th><th>Actions</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
+
+<div class="panel" style="max-width:none"><b>Recent events</b> <span class="sub">(drops and recoveries, newest first)</span>
+  <div id="events" style="font-size:12px;margin-top:6px"></div></div>
 
 <div class="panel hidden" id="form">
   <b id="form-title">Add TV</b>
@@ -63,6 +66,12 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function when(t) { return t ? new Date(t * 1000).toLocaleTimeString() : '-'; }
+function dur(s) { s = Math.round(s || 0); return s >= 60 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : s + 's'; }
+function lastDrop(t) {
+  if (t.down_since) return `<span class="err">down ${dur(Date.now() / 1000 - t.down_since)}</span>`;
+  if (!t.last_drop) return '-';
+  return when(t.last_drop) + (t.last_down_s != null ? ` (off ${dur(t.last_down_s)})` : '');
+}
 function say(text, isErr) { const m = document.getElementById('msg'); m.textContent = text || ''; m.className = isErr ? 'err' : ''; }
 
 async function call(method, path, body) {
@@ -89,6 +98,8 @@ async function refresh() {
         <td>${when(t.last_check)}</td>
         <td>${when(t.last_recast)}</td>
         <td>${t.recasts_today}</td>
+        <td>${t.drops_today || 0}</td>
+        <td>${lastDrop(t)}</td>
         <td>
           <button onclick="act('${t.id}','cast')">Cast now</button>
           <button onclick="act('${t.id}','stop')">Stop</button>
@@ -97,6 +108,12 @@ async function refresh() {
         </td>
       </tr>`).join('');
   } catch (e) { say('Could not load: ' + e.message, true); }
+  try {
+    const ev = (await call('GET', '/api/events')).events;
+    document.getElementById('events').innerHTML = ev.length ? ev.slice(0, 40).map(e =>
+      `<div>${new Date(e.t * 1000).toLocaleString()} - <b>${esc(e.name)}</b> ${esc(e.event)}</div>`).join('')
+      : '<span class="sub">No drops since Cast Manager started.</span>';
+  } catch (e) { /* events are optional */ }
 }
 
 async function act(id, what) {

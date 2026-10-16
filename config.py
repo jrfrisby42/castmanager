@@ -11,7 +11,7 @@ import secrets
 import threading
 from urllib.parse import urlsplit
 
-DEFAULTS = {"port": 8765, "check_interval_s": 45, "refresh_interval_s": 10800, "takeover": "idle_only", "tvs": []}
+DEFAULTS = {"port": 8765, "check_interval_s": 20, "refresh_interval_s": 10800, "takeover": "idle_only", "tvs": []}
 TAKEOVER_MODES = ("idle_only", "always")
 
 # A run of 16+ URL-safe characters looks like a token (display links use 43).

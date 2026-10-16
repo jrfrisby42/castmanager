@@ -1,8 +1,8 @@
 # Cast Manager
 
 Keeps the office TVs (Chromecast / Google TV) showing their dashboard display links. A watchdog
-checks every TV every `check_interval_s` seconds and re-casts when a TV has fallen back to its
-idle screen. A local web page at http://127.0.0.1:8765 shows status and lets you manage the TVs.
+checks every TV every `check_interval_s` seconds, and also the moment a TV reports a change (connection
+lost, back to its idle screen, another app), and re-casts when a TV has fallen back to its idle screen. A local web page at http://127.0.0.1:8765 shows status and lets you manage the TVs.
 
 ## Setup
 
@@ -30,7 +30,7 @@ The web page only listens on 127.0.0.1. Logs go to `logs\castmanager.log` (1 MB 
 | Key | Meaning |
 |---|---|
 | `port` | Web page port (default 8765) |
-| `check_interval_s` | Seconds between watchdog passes (default 45, minimum 5) |
+| `check_interval_s` | Seconds between watchdog passes (default 20, minimum 5). Device change events trigger a check at once, so this is only the safety net |
 | `refresh_interval_s` | Re-cast a TV that is showing its page every this many seconds, so a frozen page gets a fresh start (default 10800 = 3 hours, minimum 600, `0` = off) |
 | `takeover` | `idle_only`: re-cast only when the TV is idle or already on DashCast. `always`: also take over other apps |
 | `tvs[]` | `name`, `ip`, `uuid`, `url`, `enabled`. An `id` is added automatically on first start |
@@ -42,13 +42,16 @@ Watchdog rules, per enabled TV:
 | Showing DashCast (app 84912283) | nothing | showing |
 | Idle (Backdrop or no app) | re-cast | idle, then casting |
 | Another app | `idle_only`: nothing; `always`: re-cast | in use by (app) |
-| Unreachable | reconnect with backoff 45 s doubling to 5 min | offline |
+| Unreachable | reconnect every 15 s for the first 2 minutes, then 30 s doubling to 2 min | offline |
 | UUID does not match config | never cast | wrong device |
 
 A TV that has been showing its page for `refresh_interval_s` since its last cast is re-cast (the
 app is quit and relaunched), because a Chromecast page left running for hours can stop repainting
-while it still looks like it is showing. At most one watchdog re-cast per TV every 2 minutes. Each TV is also cast once at startup and
+while it still looks like it is showing. At most one watchdog re-cast per TV per minute. Each TV is also cast once at startup and
 whenever its url changes. A TV with no url, no UUID, or `enabled: false` is never cast to.
+Each TV's drops today, its last drop and how long it was off are shown on the page, with a list of
+recent drops and recoveries (`GET /api/events`). A drop is the TV leaving its page on its own: going
+offline, back to idle, or to another app; re-casts, pauses and stops are not drops.
 **Stop** quits the app on the TV and pauses that TV's watchdog until you press **Resume** or **Cast now**.
 
 ## Start with Windows
