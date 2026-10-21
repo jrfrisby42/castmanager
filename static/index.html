@@ -31,6 +31,7 @@
 <div>
   <button onclick="openForm(null)">Add TV</button>
   <button onclick="discover()">Discover</button>
+  <button onclick="restartAll()" title="Reconnect, quit the app and re-cast every enabled, unpaused TV">Restart all</button>
 </div>
 <div id="msg"></div>
 <table>
@@ -102,6 +103,7 @@ async function refresh() {
         <td>${lastDrop(t)}</td>
         <td>
           <button onclick="act('${t.id}','cast')">Cast now</button>
+          <button onclick="act('${t.id}','restart')" title="Reconnect, quit the app, then re-cast">Restart</button>
           <button onclick="act('${t.id}','stop')">Stop</button>
           <button onclick="act('${t.id}','${t.paused ? 'resume' : 'pause'}')">${t.paused ? 'Resume' : 'Pause'}</button>
           <button onclick="openForm('${t.id}')">Edit</button>
@@ -119,6 +121,14 @@ async function refresh() {
 async function act(id, what) {
   try { const r = await call('POST', `/api/tvs/${id}/${what}`); say(r.message); }
   catch (e) { say(what + ' failed: ' + e.message, true); }
+  refresh();
+}
+
+async function restartAll() {
+  if (!confirm('Restart every enabled, unpaused TV? Each goes blank for a few seconds.')) return;
+  say('Restarting all TVs (about 15 seconds)...');
+  try { const r = await call('POST', '/api/restart-all'); say(r.message, !r.ok); }
+  catch (e) { say('Restart all failed: ' + e.message, true); }
   refresh();
 }
 

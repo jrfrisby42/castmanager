@@ -21,6 +21,7 @@ BACKOFF_MAX_S = 120
 QUIT_SETTLE_S = 8             # how long to wait for a TV to go idle after stopping its app
 POKE_SETTLE_S = 1.0           # coalesce a burst of device change events into one check
 CAST_GRACE_S = 20             # after a cast, a TV briefly reporting idle is still launching
+RESTART_PAUSE_S = 3           # soft restart: idle time between quitting the app and casting again
 EVENTS_KEPT = 200
 
 
@@ -386,6 +387,56 @@ class Watchdog:
             if ok:
                 st.pending = None
             return ok, msg
+
+    def restart(self, tv_id):
+        """Soft restart: drop the connection and open a fresh one, quit the app on the TV, leave
+        it idle for RESTART_PAUSE_S, then cast its url. Cast now keeps the existing connection;
+        this also clears a connection that has gone stale. It cannot reboot the Chromecast
+        itself (cast firmware 1.50 needs a Google-issued token for that)."""
+        with self._lock_for(tv_id):
+            tv = self.store.tv(tv_id)
+            refusal = cast_refusal(tv, tv)
+            if refusal:
+                return False, refusal
+            st = self._state(tv_id)
+            st.paused = False
+            self._disconnect(st)
+            st.backoff_s = st.next_attempt = 0
+            st.offline_since = None
+            now = self.clock()
+            handle, dev = self._connected_status(tv, st, now)
+            if dev is None:
+                return False, "offline (could not reconnect)"
+            refusal = cast_refusal(tv, tv, dev)
+            if refusal:
+                return False, refusal
+            log.info("%s (%s): soft restart", tv["name"], tv["ip"])
+            self._stop_running_app(tv, handle)
+            self.sleep(RESTART_PAUSE_S)
+            ok, msg = self._safe_cast(tv, st, handle, self.backend.status(handle), "soft restart", now)
+            if ok:
+                st.pending = None
+                self._event(tv, "soft restart")
+            return ok, "restarted" if ok else msg
+
+    def restart_all(self):
+        """Soft-restart every enabled TV that is not paused, all at once. Returns one result per TV."""
+        tvs = [t for t in self.store.tvs() if t["enabled"] and not self._state(t["id"]).paused]
+        results = {}
+
+        def one(t):
+            try:
+                results[t["id"]] = self.restart(t["id"])
+            except Exception as e:
+                log.exception("%s (%s): soft restart failed", t["name"], t["ip"])
+                results[t["id"]] = (False, f"failed: {e}")
+        threads = [threading.Thread(target=one, args=(t,), daemon=True) for t in tvs]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        return [{"id": t["id"], "name": t["name"], "ok": results[t["id"]][0], "message": results[t["id"]][1]}
+                for t in tvs]
 
     def stop(self, tv_id):
         with self._lock_for(tv_id):

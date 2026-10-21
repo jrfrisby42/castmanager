@@ -108,6 +108,19 @@ def create_app(store, watchdog, backend):
     def cast_now(tv_id: str):
         return _result(*watchdog.cast_now(tv_id))
 
+    @app.post("/api/tvs/{tv_id}/restart")
+    def restart(tv_id: str):
+        return _result(*watchdog.restart(tv_id))
+
+    @app.post("/api/restart-all")
+    def restart_all():
+        results = watchdog.restart_all()
+        bad = [r for r in results if not r["ok"]]
+        msg = f"restarted {len(results) - len(bad)} of {len(results)} TVs"
+        if bad:
+            msg += "; not restarted: " + ", ".join(f"{r['name']} ({r['message']})" for r in bad)
+        return {"ok": not bad, "message": msg, "results": results}
+
     @app.post("/api/tvs/{tv_id}/stop")
     def stop(tv_id: str):
         return _result(*watchdog.stop(tv_id))

@@ -399,3 +399,55 @@ def test_idle_blip_while_launching_stays_casting(make):
     clock.advance(25)                                 # still idle well after the cast: real idle
     wd.check_once()
     assert wd.snapshot()[0]["status"] == "idle"
+
+
+# ---------------------------------------------------------------- soft restart
+
+def test_restart_reconnects_quits_then_casts(make):
+    store, backend, wd, clock = make([tv(1)])
+    paused = []
+    wd.sleep = paused.append
+    settle(wd, backend, clock)                        # showing DashCast on an open connection
+    old = wd._states["tv-1"].handle
+    ok, msg = wd.restart("tv-1")
+    assert (ok, msg) == (True, "restarted")
+    assert not old.alive                              # the old connection was dropped
+    assert [c[0] for c in backend.calls] == ["connect", "quit", "cast"]
+    assert 3 in paused                                # idle pause before the re-cast
+    assert wd.snapshot()[0]["status"] == "casting"
+    assert wd.recent_events()[0]["event"] == "soft restart"
+
+
+def test_restart_unpauses_and_skips_backoff(make):
+    store, backend, wd, clock = make([tv(1)])
+    wd.sleep = lambda s: None
+    settle(wd, backend, clock)
+    wd.stop("tv-1")
+    st = wd._states["tv-1"]
+    st.next_attempt = clock.t + 999
+    assert wd.restart("tv-1")[0]
+    assert not st.paused
+    assert len(backend.casts()) == 1
+
+
+def test_restart_refusals(make):
+    store, backend, wd, clock = make([tv(1), tv(2, enabled=False), tv(3)])
+    wd.sleep = lambda s: None
+    backend.devices["10.0.201.3"].uuid = "someone-else"
+    assert wd.restart("tv-2") == (False, "disabled")
+    assert wd.restart("tv-3") == (False, "wrong device at this IP")
+    backend.devices["10.0.201.1"].reachable = False
+    assert wd.restart("tv-1") == (False, "offline (could not reconnect)")
+    assert not backend.casts()
+
+
+def test_restart_all_skips_paused_and_disabled(make):
+    store, backend, wd, clock = make([tv(1), tv(2), tv(3, enabled=False), tv(4)])
+    wd.sleep = lambda s: None
+    settle(wd, backend, clock)
+    wd.stop("tv-2")
+    backend.devices["10.0.201.4"].reachable = False
+    results = {r["id"]: r for r in wd.restart_all()}
+    assert set(results) == {"tv-1", "tv-4"}
+    assert results["tv-1"]["ok"] and not results["tv-4"]["ok"]
+    assert [c[1] for c in backend.casts()] == ["10.0.201.1"]

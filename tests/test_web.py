@@ -61,3 +61,14 @@ def test_local_only_guards(client):
 
 def test_bind_host_is_loopback():
     assert main.HOST == "127.0.0.1"
+
+
+def test_restart_endpoints(client, monkeypatch):
+    import watchdog
+    monkeypatch.setattr(watchdog, "RESTART_PAUSE_S", 0)   # the watchdog sleeps for real here
+    r = client.post("/api/tvs/tv-1/restart", headers=H)
+    assert r.status_code == 200 and r.json()["message"] == "restarted"
+    assert client.post("/api/tvs/nope/restart", headers=H).status_code == 409
+    assert client.post("/api/restart-all").status_code == 403            # no custom header
+    r = client.post("/api/restart-all", headers=H).json()
+    assert r["ok"] and r["message"] == "restarted 2 of 2 TVs"

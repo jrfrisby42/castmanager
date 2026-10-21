@@ -53,6 +53,11 @@ Each TV's drops today, its last drop and how long it was off are shown on the pa
 recent drops and recoveries (`GET /api/events`). A drop is the TV leaving its page on its own: going
 offline, back to idle, or to another app; re-casts, pauses and stops are not drops.
 **Stop** quits the app on the TV and pauses that TV's watchdog until you press **Resume** or **Cast now**.
+**Restart** is a soft restart: it drops the connection to the TV and opens a fresh one, quits the app,
+leaves the TV idle for 3 seconds and casts its url again (`POST /api/tvs/{id}/restart`). **Restart all**
+does that to every enabled TV that isn't paused, all at once (`POST /api/restart-all`). Neither reboots
+the Chromecast itself: on cast firmware 1.50 a reboot needs a Google-issued local auth token, so a TV
+that is fully frozen or off the network still needs its power cycled.
 
 ## Start with Windows
 
