@@ -47,7 +47,11 @@ Watchdog rules, per enabled TV:
 
 A TV that has been showing its page for `refresh_interval_s` since its last cast is re-cast (the
 app is quit and relaunched), because a Chromecast page left running for hours can stop repainting
-while it still looks like it is showing. At most one watchdog re-cast per TV per minute. Each TV is also cast once at startup and
+while it still looks like it is showing. At most one watchdog re-cast per TV per minute, except
+right after a reconnect: a TV that went offline or restarted after its last cast never got that
+cast, so it is re-cast at once. If a drop's re-cast went through on the same connection and the
+TV is still not showing a minute later, the next attempt is an automatic soft restart (see
+**Restart** below). A TV that drops offline but comes back still showing its page is left alone. Each TV is also cast once at startup and
 whenever its url changes. A TV with no url, no UUID, or `enabled: false` is never cast to.
 Each TV's drops today, its last drop and how long it was off are shown on the page, with a list of
 recent drops and recoveries (`GET /api/events`). A drop is the TV leaving its page on its own: going

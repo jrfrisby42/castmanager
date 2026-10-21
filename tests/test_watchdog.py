@@ -451,3 +451,59 @@ def test_restart_all_skips_paused_and_disabled(make):
     assert set(results) == {"tv-1", "tv-4"}
     assert results["tv-1"]["ok"] and not results["tv-4"]["ok"]
     assert [c[1] for c in backend.casts()] == ["10.0.201.1"]
+
+
+def test_reconnect_after_a_cast_recasts_without_the_hold(make):
+    # Finance TV 2026-10-21: idle -> re-cast -> TV dropped off (restarting) -> back idle 54 s later,
+    # and the re-cast was held for the rest of the minute.
+    store, backend, wd, clock = make([tv(1)])
+    wd.sleep = lambda s: None
+    settle(wd, backend, clock)
+    dev = backend.devices["10.0.201.1"]
+    dev.app_id, dev.display_name = None, "Backdrop"
+    wd.check_once()
+    assert len(backend.casts()) == 1
+    dev.app_id, dev.display_name = None, "Backdrop"   # the cast never landed: the TV restarted
+    wd._states["tv-1"].handle.alive = False
+    clock.advance(30)
+    wd.check_once()
+    assert len(backend.casts()) == 2                  # no 60 s hold on a fresh connection
+    assert "quit" not in [c[0] for c in backend.calls]
+
+
+def test_recast_that_does_not_take_escalates_to_soft_restart(make):
+    store, backend, wd, clock = make([tv(1)])
+    paused = []
+    wd.sleep = paused.append
+    settle(wd, backend, clock)
+    wd.check_once()                                   # casting -> showing, so the idle below is a drop
+    dev = backend.devices["10.0.201.1"]
+    dev.app_id, dev.display_name = None, "Backdrop"
+    wd.check_once()                                   # plain re-cast on the same connection
+    assert [c[0] for c in backend.calls] == ["cast"]
+    dev.app_id, dev.display_name = None, "Backdrop"   # ...that didn't take
+    clock.advance(30)
+    wd.check_once()                                   # within the minute: held
+    assert len(backend.casts()) == 1
+    clock.advance(31)
+    backend.calls.clear()
+    wd.check_once()
+    assert [c[0] for c in backend.calls] == ["connect", "cast"]   # fresh connection, then cast
+    assert 3 in paused
+    assert wd.recent_events()[0]["event"] == "auto soft restart (re-cast didn't take)"
+
+
+def test_offline_blip_while_showing_is_left_alone(make):
+    # marketing-k12 drops off Wi-Fi for seconds many times a day, still showing its page.
+    store, backend, wd, clock = make([tv(1)])
+    wd.sleep = lambda s: None
+    settle(wd, backend, clock)
+    backend.devices["10.0.201.1"].reachable = False
+    wd._states["tv-1"].handle.alive = False
+    wd.check_once()
+    assert wd.snapshot()[0]["status"] == "offline"
+    backend.devices["10.0.201.1"].reachable = True
+    clock.advance(15)
+    wd.check_once()
+    assert wd.snapshot()[0]["status"] == "showing"
+    assert not backend.casts() and "quit" not in [c[0] for c in backend.calls]

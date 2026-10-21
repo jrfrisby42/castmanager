@@ -90,6 +90,7 @@ class TVState:
     last_drop: float | None = None
     last_down_s: float | None = None   # length of the last outage, once it recovered
     poke_pending: bool = False
+    connected_at: float | None = None  # when the current connection was opened
 
 
 class Watchdog:
@@ -204,6 +205,7 @@ class Watchdog:
             return None
         st.backoff_s = st.next_attempt = 0
         st.offline_since = None
+        st.connected_at = now
         log.info("%s (%s): connected", tv["name"], tv["ip"])
         return st.handle
 
@@ -318,10 +320,18 @@ class Watchdog:
                 if ok:
                     st.pending = None
             elif want:
-                if st.last_recast is not None and now - st.last_recast < RECAST_MIN_INTERVAL_S:
+                reason = "TV was idle" if kind == "idle" else f"takeover=always, TV showed {st.now_showing}"
+                # A connection opened since the last cast (the TV went offline or restarted after
+                # it) means that cast never reached the TV: cast at once instead of holding.
+                fresh = st.last_recast is not None and (st.connected_at or 0) > st.last_recast
+                if fresh:
+                    self._safe_cast(tv, st, handle, dev, reason + " (reconnected)", now)
+                elif st.last_recast is not None and now - st.last_recast < RECAST_MIN_INTERVAL_S:
                     log.info("%s: %s but re-cast held (%ds limit)", tv["name"], kind, RECAST_MIN_INTERVAL_S)
+                elif st.down_since is not None and st.last_recast is not None and st.last_recast >= st.down_since:
+                    # This drop already got a re-cast on this same connection and it didn't take.
+                    self._soft_restart(tv, st, "auto soft restart (re-cast didn't take)")
                 else:
-                    reason = "TV was idle" if kind == "idle" else f"takeover=always, TV showed {st.now_showing}"
                     self._safe_cast(tv, st, handle, dev, reason, now)
 
     def check_once(self):
@@ -400,24 +410,27 @@ class Watchdog:
                 return False, refusal
             st = self._state(tv_id)
             st.paused = False
-            self._disconnect(st)
-            st.backoff_s = st.next_attempt = 0
-            st.offline_since = None
-            now = self.clock()
-            handle, dev = self._connected_status(tv, st, now)
-            if dev is None:
-                return False, "offline (could not reconnect)"
-            refusal = cast_refusal(tv, tv, dev)
-            if refusal:
-                return False, refusal
-            log.info("%s (%s): soft restart", tv["name"], tv["ip"])
-            self._stop_running_app(tv, handle)
-            self.sleep(RESTART_PAUSE_S)
-            ok, msg = self._safe_cast(tv, st, handle, self.backend.status(handle), "soft restart", now)
-            if ok:
-                st.pending = None
-                self._event(tv, "soft restart")
-            return ok, "restarted" if ok else msg
+            return self._soft_restart(tv, st, "soft restart")
+
+    def _soft_restart(self, tv, st, reason):
+        """The restart itself (caller holds the TV's lock): fresh connection, quit, pause, cast."""
+        self._disconnect(st)
+        st.backoff_s = st.next_attempt = 0
+        st.offline_since = None
+        handle, dev = self._connected_status(tv, st, self.clock())
+        if dev is None:
+            return False, "offline (could not reconnect)"
+        refusal = cast_refusal(tv, self.store.tv(tv["id"]), dev)
+        if refusal:
+            return False, refusal
+        log.info("%s (%s): %s", tv["name"], tv["ip"], reason)
+        self._stop_running_app(tv, handle)
+        self.sleep(RESTART_PAUSE_S)
+        ok, msg = self._safe_cast(tv, st, handle, self.backend.status(handle), reason, self.clock())
+        if ok:
+            st.pending = None
+            self._event(tv, reason)
+        return ok, "restarted" if ok else msg
 
     def restart_all(self):
         """Soft-restart every enabled TV that is not paused, all at once. Returns one result per TV."""
