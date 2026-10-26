@@ -33,7 +33,15 @@ The web page only listens on 127.0.0.1. Logs go to `logs\castmanager.log` (1 MB 
 | `check_interval_s` | Seconds between watchdog passes (default 20, minimum 5). Device change events trigger a check at once, so this is only the safety net |
 | `refresh_interval_s` | Re-cast a TV that is showing its page every this many seconds, so a frozen page gets a fresh start (default 10800 = 3 hours, minimum 600, `0` = off) |
 | `takeover` | `idle_only`: re-cast only when the TV is idle or already on DashCast. `always`: also take over other apps |
+| `dashboard_url` | Dashboard server for the alert-email switches (default `https://dashboard.frazil.app`) |
+| `dashboard_api_key` | The dashboard's API key (its `API_KEY`). Leave blank to hide the alert-email switches |
 | `tvs[]` | `name`, `ip`, `uuid`, `url`, `enabled`. An `id` is added automatically on first start |
+
+**Alert emails** on the page turn the dashboard's alert emails on or off by kind: TV display offline,
+external dashboard sign-in needed, TV slide stopped updating, and system health
+(`GET`/`PUT /api/alert-emails`, which call the dashboard's `/admin/alert-emails`). The switches live
+on the dashboard server, so a change applies from its next health check (within 5 minutes). Turning
+off TV display emails here overrides each display's own alert setting in the dashboard.
 
 Watchdog rules, per enabled TV:
 

@@ -1,6 +1,6 @@
 """Config file handling and URL masking for Cast Manager.
 
-config.json holds display links, which are secrets, so it is git-ignored.
+config.json holds display links and the dashboard API key, which are secrets, so it is git-ignored.
 """
 import copy
 import ipaddress
@@ -11,7 +11,8 @@ import secrets
 import threading
 from urllib.parse import urlsplit
 
-DEFAULTS = {"port": 8765, "check_interval_s": 20, "refresh_interval_s": 10800, "takeover": "idle_only", "tvs": []}
+DEFAULTS = {"port": 8765, "check_interval_s": 20, "refresh_interval_s": 10800, "takeover": "idle_only",
+            "dashboard_url": "https://dashboard.frazil.app", "dashboard_api_key": "", "tvs": []}
 TAKEOVER_MODES = ("idle_only", "always")
 
 # A run of 16+ URL-safe characters looks like a token (display links use 43).

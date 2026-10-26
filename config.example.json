@@ -3,6 +3,8 @@
   "check_interval_s": 20,
   "refresh_interval_s": 10800,
   "takeover": "idle_only",
+  "dashboard_url": "https://dashboard.frazil.app",
+  "dashboard_api_key": "",
   "tvs": [
     {"name": "Finance TV", "ip": "10.0.201.69", "uuid": "70b93c76-712c-365f-3976-66b7a97e9231", "url": "", "enabled": true},
     {"name": "Camron's TV", "ip": "10.0.201.17", "uuid": "12d6fbe0-5b04-62d5-2158-542204f44f3f", "url": "", "enabled": true},

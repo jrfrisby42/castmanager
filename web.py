@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from dashboard import DashboardClient, DashboardError
+
 log = logging.getLogger("castmanager")
 STATIC = Path(__file__).parent / "static"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
@@ -32,8 +34,18 @@ class LookupIn(BaseModel):
     ip: str
 
 
-def create_app(store, watchdog, backend):
+class AlertEmailsIn(BaseModel):
+    displays: bool | None = None
+    signins: bool | None = None
+    stale_slides: bool | None = None
+    system_health: bool | None = None
+
+
+def create_app(store, watchdog, backend, dashboard=None):
     app = FastAPI(title="Cast Manager", docs_url=None, redoc_url=None, openapi_url=None)
+    if dashboard is None:
+        cfg = store.get()
+        dashboard = DashboardClient(cfg["dashboard_url"], cfg["dashboard_api_key"])
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -148,5 +160,24 @@ def create_app(store, watchdog, backend):
         except Exception as e:
             log.warning("discover failed: %s", e)
             raise HTTPException(502, f"discover failed: {e}")
+
+    @app.get("/api/alert-emails")
+    def get_alert_emails():
+        if not dashboard.configured():
+            return {"configured": False}
+        try:
+            return {"configured": True, "switches": dashboard.alert_emails()}
+        except DashboardError as e:
+            raise HTTPException(502, str(e))
+
+    @app.put("/api/alert-emails")
+    def set_alert_emails(body: AlertEmailsIn):
+        changes = {k: v for k, v in body.model_dump().items() if v is not None}
+        try:
+            switches = dashboard.set_alert_emails(changes)
+        except DashboardError as e:
+            raise HTTPException(502, str(e))
+        log.info("alert emails set: %s", ", ".join(f"{k}={'on' if v else 'off'}" for k, v in changes.items()))
+        return {"configured": True, "switches": switches}
 
     return app

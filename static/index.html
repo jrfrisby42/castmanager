@@ -40,6 +40,9 @@
   <tbody id="rows"></tbody>
 </table>
 
+<div class="panel" id="alerts"><b>Alert emails</b> <span class="sub">(sent by the dashboard server)</span>
+  <div id="alerts-body" style="font-size:13px;margin-top:6px">Loading...</div></div>
+
 <div class="panel" style="max-width:none"><b>Recent events</b> <span class="sub">(drops and recoveries, newest first)</span>
   <div id="events" style="font-size:12px;margin-top:6px"></div></div>
 
@@ -195,8 +198,37 @@ async function discover() {
   } catch (e) { say(e.message, true); }
 }
 
+const ALERT_TYPES = [
+  ['displays', 'TV display offline / back online'],
+  ['signins', 'External dashboard sign-in needed or expiring'],
+  ['stale_slides', 'TV slide stopped updating'],
+  ['system_health', 'System health (database, APIs, widget errors)'],
+];
+function showAlerts(d) {
+  const box = document.getElementById('alerts-body');
+  if (!d.configured) {
+    box.innerHTML = '<span class="sub">Set dashboard_api_key in config.json and restart Cast Manager to manage these here.</span>';
+    return;
+  }
+  box.innerHTML = ALERT_TYPES.map(([k, label]) =>
+    `<label style="display:block;margin:4px 0"><input type="checkbox" id="ae-${k}" ${d.switches[k] ? 'checked' : ''}
+      onchange="setAlert('${k}', this.checked)"> ${esc(label)}</label>`).join('');
+}
+async function loadAlerts() {
+  try { showAlerts(await call('GET', '/api/alert-emails')); }
+  catch (e) { document.getElementById('alerts-body').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+async function setAlert(k, on) {
+  try {
+    showAlerts(await call('PUT', '/api/alert-emails', { [k]: on }));
+    say(`${ALERT_TYPES.find(a => a[0] === k)[1]} emails turned ${on ? 'on' : 'off'}.`);
+  } catch (e) { say('Could not change alert emails: ' + e.message, true); loadAlerts(); }
+}
+
 refresh();
 setInterval(refresh, 5000);
+loadAlerts();
+setInterval(loadAlerts, 60000);
 </script>
 </body>
 </html>
